@@ -3,76 +3,118 @@ import json
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from urllib.parse import urljoin
+import urllib3
 import requests
 from bs4 import BeautifulSoup
 from google import genai
 
-# Configuration & Secrets
+# सरकारी और यूनिवर्सिटी साइट्स के SSL एरर को रोकने के लिए
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Secrets & Configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-BLOGGER_EMAIL = os.environ.get("BLOGGER_EMAIL")       # Step 1 वाली सीक्रेट ब्लॉगर ईमेल
-SENDER_GMAIL = os.environ.get("SENDER_GMAIL")         # आपका Gmail
-GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS")     # Gmail App Password (16 अक्षर का)
+BLOGGER_EMAIL = os.environ.get("BLOGGER_EMAIL")
+SENDER_GMAIL = os.environ.get("SENDER_GMAIL")
+GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 HISTORY_FILE = "posted_notices.json"
+MAX_POSTS_PER_RUN = 2  # एक रन में अधिकतम 2 पोस्ट्स ताकि ब्लॉग और जीमेल स्पैम न हों
+
+# जिन-जिन यूनिवर्सिटी पेजों को ट्रैक करना है
+TARGET_PORTALS = [
+    # 1. PDUSU (शेखावाटी यूनिवर्सिटी सीकर)
+    {"uni": "PDUSU Sikar", "label": "PDUSU", "type": "Academics", "url": "https://shekhauni.ac.in/Home/Academics"},
+    {"uni": "PDUSU Sikar", "label": "PDUSU", "type": "Research", "url": "https://shekhauni.ac.in/Home/Research"},
+    {"uni": "PDUSU Sikar", "label": "PDUSU", "type": "Examination", "url": "https://shekhauni.ac.in/Home/Examination"},
+    {"uni": "PDUSU Sikar", "label": "PDUSU, Result", "type": "Result", "url": "https://result26.shekhauniexam.in/RESULTS.aspx"},
+
+    # 2. Rajasthan University (राजस्थान यूनिवर्सिटी, जयपुर)
+    {"uni": "Rajasthan University (RU)", "label": "RU Jaipur", "type": "Circular", "url": "https://www.uniraj.ac.in/index.php?mid=196&cirid=4"},
+    {"uni": "Rajasthan University (RU)", "label": "RU Jaipur, Examination", "type": "Examination", "url": "https://www.uniraj.ac.in/index.php?mid=196&cirid=3"},
+    {"uni": "Rajasthan University (RU)", "label": "RU Jaipur", "type": "Notification", "url": "https://www.uniraj.ac.in/index.php?mid=195"},
+
+    # 3. MGSU (महाराजा गंगा सिंह यूनिवर्सिटी, बीकानेर)
+    {"uni": "MGSU Bikaner", "label": "MGSU, Examination", "type": "Examination", "url": "https://www.mgsubikaner.ac.in/notification/examination"},
+    {"uni": "MGSU Bikaner", "label": "MGSU", "type": "Colleges", "url": "https://www.mgsubikaner.ac.in/notification/colleges"},
+    {"uni": "MGSU Bikaner", "label": "MGSU", "type": "Student Update", "url": "https://www.mgsubikaner.ac.in/notification/student-update"},
+
+    # 4. RRBMU (मत्स्य यूनिवर्सिटी, अलवर)
+    {"uni": "RRBMU Alwar", "label": "RRBMU", "type": "Latest Update", "url": "https://www.rrbmuniv.ac.in/LatestUpdateMore.php?link=0"},
+]
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except:
+                return []
     return []
 
 def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
-def get_latest_university_notices():
-    """
-    उदाहरण: PDUSU Sikar की वेबसाइट से ताज़ा नोटिस निकालना
-    (ज़रूरत पड़ने पर इस URL और क्लास को दूसरी यूनिवर्सिटी के हिसाब से बदला जा सकता है)
-    """
-    url = "https://shekhauni.ac.in/news"  # यूनिवर्सिटी का नोटिफिकेशन पेज
-    headers = {"User-Agent": "Mozilla/5.0"}
+def fetch_notices_from_portal(portal):
+    """यूनिवर्सिटी के पेज से लिंक्स और फाइल्स निकालना"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     notices = []
-    
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
-            # यूनिवर्सिटी के लिंक्स और नोटिस ढूँढना
-            for link in soup.find_all("a", href=True):
-                text = link.get_text(strip=True)
-                href = link["href"]
-                # अगर लिंक में result, exam, timetable, syllabus या notice का ज़िक्र हो
-                keywords = ["result", "exam", "time table", "admit", "notice", "syllabus", "परीक्षा", "परिणाम"]
-                if any(k in text.lower() for k in keywords) and len(text) > 10:
-                    full_url = href if href.startswith("http") else "https://shekhauni.ac.in/" + href.lstrip("/")
-                    notices.append({"title": text, "url": full_url})
+        res = requests.get(portal["url"], headers=headers, timeout=20, verify=False)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            
+            # सभी लिंक्स को स्कैन करना
+            for a in soup.find_all("a", href=True):
+                title = a.get_text(strip=True)
+                href = a["href"].strip()
+                
+                # बेकार लिंक्स छोड़ना (Home, Login, Contact ইত্যাদি)
+                ignore_list = ["home", "about", "contact", "login", "sitemap", "gallery", "tenders", "javascript:", "#"]
+                if not href or any(ign in href.lower() for ign in ignore_list):
+                    continue
+                    
+                # लिंक का टेक्स्ट कम से कम 12 अक्षर का होना चाहिए (ताकि अर्थपूर्ण नोटिस हो)
+                if len(title) >= 12:
+                    full_url = urljoin(portal["url"], href)
+                    notices.append({
+                        "title": title,
+                        "url": full_url,
+                        "uni": portal["uni"],
+                        "label": portal["label"],
+                        "type": portal["type"]
+                    })
     except Exception as e:
-        print(f"Error scraping notices: {e}")
+        print(f"⚠️ Error reading {portal['uni']} ({portal['url']}): {e}")
         
-    return notices[:5]  # टॉप 5 ताज़ा नोटिस
+    return notices
 
-def generate_post_content(title, notice_url):
-    """Google Gemini AI से आकर्षक और छात्रोपयोगी पोस्ट तैयार करवाना"""
+def generate_ai_post(notice):
+    """Gemini AI से सुंदर छात्रोपयोगी ब्लॉग पोस्ट बनवाना"""
     client = genai.Client(api_key=GEMINI_API_KEY)
     
     prompt = f"""
-    आप Exam Sathi (राजस्थान का प्रतिष्ठित छात्र पोर्टल) के कंटेंट लेखक हैं।
-    यूनिवर्सिटी से यह नया नोटिस आया है:
-    शीर्षक: {title}
-    नोटिस/डाउनलोड लिंक: {notice_url}
+    आप Exam Sathi (राजस्थान का प्रतिष्ठित छात्र पोर्टल) के मुख्य संपादक हैं।
+    यूनिवर्सिटी: {notice['uni']}
+    श्रेणी: {notice['type']}
+    नोटिस शीर्षक: {notice['title']}
+    डाउनलोड/रिजल्ट लिंक: {notice['url']}
 
-    कृपया इसके लिए एक आकर्षक HTML ब्लॉग पोस्ट तैयार करें।
-    शर्तें:
-    1. भाषा: सरल हिंदी (Hinglish/Hindi) जो छात्रों को आसानी से समझ आए।
-    2. इसमें शामिल करें:
-       - महत्वपूर्ण हाइलाइट्स (Bullet points में)।
-       - रिजल्ट या नोटिस कैसे चेक/डाउनलोड करें (Step-by-step)।
-       - एक सुंदर और बड़ा डाउनलोड बटन: <a href="{notice_url}" style="background:#1d4ed8;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block;margin:15px 0;">📥 डाउनलोड नोटिस / रिजल्ट चेक करें</a>
-       - डिस्क्लेमर कि छात्र आधिकारिक वेबसाइट से भी पुष्टि करें।
-    3. केवल शुद्ध HTML कोड दें (कोई markdown ```html न लगाएं)।
+    कृपया इसके लिए एक बहुत ही उपयोगी, सुंदर और आकर्षक HTML ब्लॉग पोस्ट तैयार करें।
+    ज़रूरी निर्देश:
+    1. भाषा: सरल हिंदी (Hinglish/Hindi) जो कॉलेज छात्र आसानी से समझ सकें।
+    2. मुख्य बातें:
+       - यह नोटिस किसके बारे में है (संक्षेप में विवरण)।
+       - महत्वपूर्ण बिंदु (Bullet points में)।
+       - रिजल्ट या नोटिस कैसे देखें / डाउनलोड करें (Step-by-step)।
+       - एक बड़ा और सुंदर बटन: <div style="text-align:center;margin:25px 0;"><a href="{notice['url']}" target="_blank" style="background:#1d4ed8;color:#ffffff;padding:14px 28px;border-radius:30px;text-decoration:none;font-weight:700;font-size:1.05rem;display:inline-block;box-shadow:0 4px 15px rgba(29,78,216,0.3);">📥 डाउनलोड नोटिस / रिजल्ट चेक करें &#8594;</a></div>
+       - छात्रों के लिए सलाह कि वे आधिकारिक पोर्टल से भी जांच करें।
+    3. कोई फालतू बात न लिखें। केवल शुद्ध HTML बॉडी कोड दें (```html टैग न लगाएं)।
     """
     
     response = client.models.generate_content(
@@ -81,77 +123,88 @@ def generate_post_content(title, notice_url):
     )
     return response.text
 
-def publish_to_blogger(title, html_content):
-    """Blogger की सीक्रेट ईमेल पर पोस्ट भेजना"""
+def publish_to_blogger(notice, html_content):
+    """Blogger की सीक्रेट ईमेल पर पोस्ट पब्लिश करना"""
     if not (BLOGGER_EMAIL and SENDER_GMAIL and GMAIL_APP_PASS):
-        print("Email configuration missing. Skipping Blogger post.")
+        print("❌ Email credentials missing. Skipping post.")
         return False
 
+    title = f"[{notice['uni']}] {notice['title']}"
     msg = MIMEMultipart("alternative")
     msg["Subject"] = title
     msg["From"] = SENDER_GMAIL
     msg["To"] = BLOGGER_EMAIL
 
-    # पोस्ट में लेबल्स जोड़ना
-    post_html = html_content + "<br/><br/><p>Labels: Result, Notice, PDUSU</p>"
-    msg.attach(MIMEText(post_html, "html"))
+    # Blogger Labels
+    labels = f"Notice, {notice['label']}"
+    full_html = html_content + f"<br/><br/><p style='color:#64748b;font-size:0.8rem;'>Labels: {labels}</p>"
+    msg.attach(MIMEText(full_html, "html"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(SENDER_GMAIL, GMAIL_APP_PASS)
             server.sendmail(SENDER_GMAIL, BLOGGER_EMAIL, msg.as_string())
-        print(f"✅ Published on Blogger: {title}")
+        print(f"✅ Blogger पर सफलतापूर्वक पोस्ट हुआ: {title}")
         return True
     except Exception as e:
-        print(f"❌ Failed to publish on Blogger: {e}")
+        print(f"❌ Blogger पब्लिशिंग फेल: {e}")
         return False
 
-def send_telegram_alert(title, notice_url):
-    """टेलीग्राम चैनल पर तुरंत सूचना भेजना"""
+def send_telegram_alert(notice):
+    """टेलीग्राम चैनल पर अलर्ट भेजना"""
     if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
         return
     message = (
-        f"🚨 <b>नया यूनिवर्सिटी अपडेट!</b>\n\n"
-        f"📌 <b>{title}</b>\n\n"
-        f"🔗 तुरंत चेक करें और डाउनलोड करें:\n"
-        f"👉 {notice_url}\n\n"
+        f"🚨 <b>{notice['uni']} ताज़ा अपडेट!</b>\n\n"
+        f"📌 <b>{notice['title']}</b>\n\n"
+        f"🔗 <b>चेक करें और डाउनलोड करें:</b>\n"
+        f"👉 {notice['url']}\n\n"
         f"🌐 <i>पोर्टल: Exam Sathi</i>"
     )
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         requests.post(url, data=payload, timeout=10)
-        print("✅ Telegram notification sent!")
+        print("✅ Telegram पर अलर्ट भेजा गया!")
     except Exception as e:
         print(f"Telegram error: {e}")
 
 def main():
     history = load_history()
-    notices = get_latest_university_notices()
-    
-    for notice in notices:
-        title = notice["title"]
-        url = notice["url"]
+    is_first_run = len(history) == 0
+    all_notices = []
+
+    print("🔍 सभी 11 यूनिवर्सिटी पेजों को स्कैन किया जा रहा है...")
+    for portal in TARGET_PORTALS:
+        notices = fetch_notices_from_portal(portal)
+        all_notices.extend(notices)
+
+    new_notices = [n for n in all_notices if n["url"] not in history]
+    print(f"कुल मिले लिंक्स: {len(all_notices)} | नए नोटिस: {len(new_notices)}")
+
+    # अगर पहली बार बॉट चल रहा है, तो 2 ताज़ा नोटिस पोस्ट करें और बाकियों को हिस्ट्री में सेव कर लें
+    posts_to_publish = new_notices[:MAX_POSTS_PER_RUN]
+
+    for notice in posts_to_publish:
+        print(f"\n🚀 नई पोस्ट तैयार हो रही है: [{notice['uni']}] {notice['title']}")
         
-        # अगर यह नोटिस पहले पब्लिश नहीं हुआ है
-        if url not in history:
-            print(f"📢 नया नोटिस मिला: {title}")
+        # 1. AI से पोस्ट बनवाना
+        post_html = generate_ai_post(notice)
+        
+        # 2. Blogger पर पब्लिश करना
+        published = publish_to_blogger(notice, post_html)
+        
+        # 3. Telegram पर सूचना भेजना
+        if published:
+            send_telegram_alert(notice)
+
+    # सभी प्राप्त नोटिसों को हिस्ट्री में सेव कर लें ताकि दोबारा न आएं
+    for n in all_notices:
+        if n["url"] not in history:
+            history.append(n["url"])
             
-            # 1. AI से पोस्ट बनवाना
-            post_content = generate_post_content(title, url)
-            
-            # 2. Blogger पर पब्लिश करना
-            published = publish_to_blogger(title, post_content)
-            
-            # 3. Telegram पर भेजना
-            send_telegram_alert(title, url)
-            
-            # 4. हिस्ट्री में सेव करना (ताकि दोबारा पोस्ट न हो)
-            history.append(url)
-            save_history(history)
-            
-            # एक बार में 1-2 ताज़ा पोस्ट ही डालें ताकि स्पैम न लगे
-            break
+    save_history(history)
+    print("✨ टास्क पूरा हुआ!")
 
 if __name__ == "__main__":
     main()
