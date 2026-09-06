@@ -2,8 +2,11 @@ name: University Notice Auto-Poster
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # हर 30 मिनट में ऑटोमैटिक चलेगा
-  workflow_dispatch:        # जब आप चाहें तब 'Run' बटन दबाकर भी टेस्ट कर सकते हैं
+    - cron: '*/30 * * * *'  # हर 30 मिनट में खुद चलेगा
+  workflow_dispatch:
+
+permissions:
+  contents: write  # यह लाइन हिस्ट्री सेव करने की गारंटी देती है
 
 jobs:
   run-bot:
@@ -36,4 +39,4 @@ jobs:
           git config --global user.email "bot@examsathi.com"
           git add posted_notices.json || true
           git commit -m "Updated notice history [skip ci]" || true
-          git push || true
+          git push origin main || true
