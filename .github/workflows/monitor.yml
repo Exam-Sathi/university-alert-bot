@@ -3,17 +3,20 @@ name: University Notice Auto-Poster
 on:
   schedule:
     - cron: '*/30 * * * *'  # हर 30 मिनट में खुद चलेगा
-  workflow_dispatch:
+  workflow_dispatch:        # जब चाहें 'Run' बटन दबाएं
 
+# यह लाइन GitHub Actions को खुद राइट (Write) परमिशन दे देती है
 permissions:
-  contents: write  # यह लाइन हिस्ट्री सेव करने की गारंटी देती है
+  contents: write
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -33,10 +36,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python auto_poster.py
 
-      - name: Commit Updated History
+      - name: Save History to Prevent Duplicates
         run: |
-          git config --global user.name "AutoBot"
-          git config --global user.email "bot@examsathi.com"
-          git add posted_notices.json || true
-          git commit -m "Updated notice history [skip ci]" || true
-          git push origin main || true
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add posted_notices.json
+          git commit -m "Updated notice history [skip ci]" || echo "No changes to commit"
+          git push origin main || echo "Push skipped"
