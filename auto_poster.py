@@ -43,7 +43,19 @@ TARGET_PORTALS = [
 
     # 4. RRBMU (मत्स्य यूनिवर्सिटी, अलवर)
     {"uni": "RRBMU Alwar", "label": "RRBMU", "type": "Latest Update", "url": "https://www.rrbmuniv.ac.in/LatestUpdateMore.php?link=0"},
-]
+    # ================= RECRUITMENT & COMMISSIONS =================
+    # 5. RPSC (राजस्थान लोक सेवा आयोग)
+    {"uni": "RPSC", "label": "RPSC", "type": "News & Press Note", "url": "https://rpsc.rajasthan.gov.in/"},
+
+    # 6. RSSB / RSMSSB (राजस्थान कर्मचारी चयन बोर्ड)
+    {"uni": "RSMSSB", "label": "RSMSSB", "type": "News & Notice", "url": "https://rssb.rajasthan.gov.in/news"},
+    {"uni": "RSMSSB", "label": "RSMSSB, Recruitment", "type": "Advertisement", "url": "https://rssb.rajasthan.gov.in/advertisements"},
+
+    # 7. UPSC (संघ लोक सेवा आयोग)
+    {"uni": "UPSC", "label": "UPSC", "type": "Recruitment Advertisement", "url": "https://www.upsc.gov.in/recruitment/recruitment-advertisement"},
+
+    # 8. SSC (कर्मचारी चयन आयोग)
+    {"uni": "SSC", "label": "SSC", "type": "Notice Board", "url": "https://ssc.gov.in/home/notice-board"},]
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
