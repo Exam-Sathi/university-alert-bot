@@ -1,45 +1,65 @@
 name: University Notice Auto-Poster
 
+# Scans university and recruitment portals, posts new notices to Blogger,
+# and alerts the Telegram/WhatsApp channels.
 on:
   schedule:
-    - cron: '*/30 * * * *'  # हर 30 मिनट में खुद चलेगा
-  workflow_dispatch:        # जब चाहें 'Run' बटन दबाएं
+    - cron: '*/30 * * * *' # every 30 minutes (GitHub may start it a few minutes late)
+  workflow_dispatch: # "Run workflow" button in the Actions tab
+    inputs:
+      baseline:
+        description: 'Baseline only: mark every current portal link as seen, post nothing'
+        type: boolean
+        default: false
 
-# यह लाइन GitHub Actions को खुद राइट (Write) परमिशन दे देती है
 permissions:
-  contents: write
+  contents: write # to commit the posted-notice history
+
+concurrency:
+  group: notice-bot
+  cancel-in-progress: false
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Scraper & Poster
+      - name: Scan portals and post new notices
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-3.6-flash
           BLOGGER_EMAIL: ${{ secrets.BLOGGER_EMAIL }}
           SENDER_GMAIL: ${{ secrets.SENDER_GMAIL }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WHATSAPP_INSTANCE_ID: ${{ secrets.WHATSAPP_INSTANCE_ID }}
+          WHATSAPP_API_TOKEN: ${{ secrets.WHATSAPP_API_TOKEN }}
+          ADMIN_TELEGRAM_BOT_TOKEN: ${{ secrets.ADMIN_TELEGRAM_BOT_TOKEN }}
+          ADMIN_TELEGRAM_CHAT_ID: ${{ secrets.ADMIN_TELEGRAM_CHAT_ID }}
+          BASELINE: ${{ inputs.baseline && '1' || '' }}
         run: python auto_poster.py
 
-      - name: Save History to Prevent Duplicates
+      - name: Save posted-notice history
+        if: always()
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add posted_notices.json
-          git commit -m "Updated notice history [skip ci]" || echo "No changes to commit"
-          git push origin main || echo "Push skipped"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add posted_notices.json notice_attempts.json
+          if git diff --cached --quiet; then
+            echo "No history changes."
+            exit 0
+          fi
+          git commit -m "Update notice history [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main
