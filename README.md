@@ -1,6 +1,6 @@
 # University Alert Bot
 
-Scans Rajasthan university and recruitment portals for new notices, writes a Hindi post with Gemini, publishes it on the [Exam Sathi blog](https://reactorgano.blogspot.com) by email, and alerts the Telegram channel [@examsathialert](https://t.me/examsathialert) (and optionally WhatsApp).
+Scans Rajasthan university and recruitment portals for new notices, writes a Hindi post with Gemini, publishes it on the [UniExamDose blog](https://reactorgano.blogspot.com) by email, and alerts the Telegram channel [@examsathialert](https://t.me/examsathialert) (and optionally WhatsApp).
 
 - **Runs:** every 30 minutes on GitHub Actions (`.github/workflows/monitor.yml`), and from Actions → *University Notice Auto-Poster* → *Run workflow*.
 - **Portals:** `TARGET_PORTALS` in `auto_poster.py`.

@@ -167,7 +167,7 @@ def generate_ai_post(notice):
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
-    आप Exam Sathi (राजस्थान का अग्रणी शिक्षा व भर्ती पोर्टल - reactorgano.blogspot.com) के शीर्ष SEO विशेषज्ञ और संपादक हैं।
+    आप UniExamDose (राजस्थान का अग्रणी शिक्षा व भर्ती पोर्टल - reactorgano.blogspot.com) के शीर्ष SEO विशेषज्ञ और संपादक हैं।
     संस्था/आयोग: {notice['uni']}
     श्रेणी: {notice['type']}
     नोटिस शीर्षक: {notice['title']}
@@ -182,7 +182,7 @@ def generate_ai_post(notice):
        - Notice Type: {notice['type']}
        - Session: {academic_session()}
        - Category: Latest Official Update
-       - Official Website: Exam Sathi Guide
+       - Official Website: UniExamDose Guide
     3. KEY HIGHLIGHTS (H2): मुख्य नियम, तिथियां और महत्वपूर्ण बिंदु (Bullet points में)।
     4. STEP-BY-STEP CHECK PROCESS (H2): छात्र या अभ्यर्थी इस नोटिस/रिजल्ट को कैसे चेक करें (Numbered List 1, 2, 3)।
     5. BIG CALL-TO-ACTION DOWNLOAD BUTTON:
@@ -218,7 +218,7 @@ def publish_to_blogger(notice, html_content):
     msg["To"] = BLOGGER_EMAIL
 
     # SEO Tags & Labels
-    labels = f"Notice, {notice['label']}, Exam Sathi, Official Update"
+    labels = f"Notice, {notice['label']}, UniExamDose, Official Update"
     full_html = html_content + f"<br/><br/><p style='color:#64748b;font-size:0.8rem;'>Labels: {labels}</p>"
     msg.attach(MIMEText(full_html, "html"))
 
@@ -236,29 +236,29 @@ def get_website_search_link(notice):
 
 
 def send_telegram_alert(notice):
-    """Telegram अलर्ट - छात्र सीधे Exam Sathi वेबसाइट पर आएगा"""
+    """Telegram अलर्ट - छात्र सीधे UniExamDose वेबसाइट पर आएगा"""
     if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
         print("⚠️ Telegram Secrets missing.")
         return
 
-    safe_uni = html.escape(notice.get('uni', 'Exam Sathi'))
+    safe_uni = html.escape(notice.get('uni', 'UniExamDose'))
     safe_title = html.escape(notice.get('title', 'Update'))
     website_url = get_website_search_link(notice)
 
     message = (
         f"🚨 <b>{safe_uni} ताज़ा अपडेट जारी!</b>\n\n"
         f"📌 <b>{safe_title}</b>\n\n"
-        f"📝 पूरी जानकारी, मुख्य नियम व आधिकारिक डाउनलोड लिंक Exam Sathi वेबसाइट पर उपलब्ध है:\n\n"
+        f"📝 पूरी जानकारी, मुख्य नियम व आधिकारिक डाउनलोड लिंक UniExamDose वेबसाइट पर उपलब्ध है:\n\n"
         f"🔗 <b>यहाँ क्लिक करके पढ़ें व डाउनलोड करें:</b>\n"
         f"👉 {website_url}\n\n"
-        f"🌐 <i>पोर्टल: Exam Sathi (सबसे तेज़ शिक्षा समाचार)</i>"
+        f"🌐 <i>पोर्टल: UniExamDose (सबसे तेज़ शिक्षा समाचार)</i>"
     )
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         res = requests.post(url, json=payload, timeout=12)
         if res.json().get("ok"):
-            print("✅ Telegram पर अलर्ट भेजा गया (Exam Sathi Website Link)!")
+            print("✅ Telegram पर अलर्ट भेजा गया (UniExamDose Website Link)!")
         else:
             print(f"❌ Telegram Error: {res.json().get('description')}")
     except Exception as e:
@@ -266,7 +266,7 @@ def send_telegram_alert(notice):
 
 
 def send_whatsapp_alert(notice):
-    """WhatsApp Channel अलर्ट - छात्र सीधे Exam Sathi वेबसाइट पर आएगा"""
+    """WhatsApp Channel अलर्ट - छात्र सीधे UniExamDose वेबसाइट पर आएगा"""
     if not (WHATSAPP_INSTANCE_ID and WHATSAPP_API_TOKEN):
         return
 
@@ -278,7 +278,7 @@ def send_whatsapp_alert(notice):
         f"📝 पूरी जानकारी, मुख्य बिंदु व PDF डाउनलोड लिंक वेबसाइट पर देखें:\n"
         f"👉 {website_url}\n\n"
         f"📲 *Join WhatsApp Channel:* {WHATSAPP_CHANNEL_URL}\n"
-        f"🌐 _Exam Sathi Portal_"
+        f"🌐 _UniExamDose Portal_"
     )
 
     url = f"https://api.green-api.com/waInstance{WHATSAPP_INSTANCE_ID}/sendMessage/{WHATSAPP_API_TOKEN}"
@@ -289,7 +289,7 @@ def send_whatsapp_alert(notice):
     try:
         res = requests.post(url, json=payload, timeout=15)
         if res.status_code == 200:
-            print("✅ WhatsApp Channel पर अलर्ट भेजा गया (Exam Sathi Website Link)!")
+            print("✅ WhatsApp Channel पर अलर्ट भेजा गया (UniExamDose Website Link)!")
         else:
             print(f"❌ WhatsApp API Status: {res.status_code} - {res.text}")
     except Exception as e:
