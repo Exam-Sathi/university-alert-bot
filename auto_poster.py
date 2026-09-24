@@ -39,7 +39,7 @@ DRY_RUN = os.environ.get("DRY_RUN") == "1"
 # Run it once when switching to this bot so only notices published after that get posted.
 BASELINE = os.environ.get("BASELINE") == "1"
 
-WEBSITE_DOMAIN = "https://reactorgano.blogspot.com"
+WEBSITE_DOMAIN = "https://www.uniexamdose.com"
 WHATSAPP_CHANNEL_URL = "https://whatsapp.com/channel/0029Vb8wG4W4o7qDPLg0JZ2L"
 HISTORY_FILE = "posted_notices.json"
 ATTEMPTS_FILE = "notice_attempts.json"
@@ -167,7 +167,7 @@ def generate_ai_post(notice):
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
-    आप UniExamDose (राजस्थान का अग्रणी शिक्षा व भर्ती पोर्टल - reactorgano.blogspot.com) के शीर्ष SEO विशेषज्ञ और संपादक हैं।
+    आप UniExamDose (राजस्थान का अग्रणी शिक्षा व भर्ती पोर्टल - www.uniexamdose.com) के शीर्ष SEO विशेषज्ञ और संपादक हैं।
     संस्था/आयोग: {notice['uni']}
     श्रेणी: {notice['type']}
     नोटिस शीर्षक: {notice['title']}
