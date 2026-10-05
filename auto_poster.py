@@ -5,10 +5,10 @@ import html
 import time
 import smtplib
 import urllib.parse
-from datetime import date
+from datetime import date, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from urllib.parse import urljoin
+from urllib.parse import urljoin, quote
 import urllib3
 import requests
 from bs4 import BeautifulSoup
@@ -38,11 +38,16 @@ DRY_RUN = os.environ.get("DRY_RUN") == "1"
 # BASELINE=1 marks every link currently on the portals as already seen, without posting.
 # Run it once when switching to this bot so only notices published after that get posted.
 BASELINE = os.environ.get("BASELINE") == "1"
+# With BASELINE=1, BASELINE_KEEP_DAYS=7 leaves notices dated in the last 7 days unseen, so they still get posted.
+BASELINE_KEEP_DAYS = int(os.environ.get("BASELINE_KEEP_DAYS") or 0)
+# Some portals block servers outside India (GitHub's included). Those are marked "india_only" below and are
+# read by a separate run on a computer in India (RUN_ON=india), which keeps its own history files.
+RUN_ON_INDIA = os.environ.get("RUN_ON") == "india"
 
 WEBSITE_DOMAIN = "https://www.uniexamdose.com"
 WHATSAPP_CHANNEL_URL = "https://whatsapp.com/channel/0029Vb8wG4W4o7qDPLg0JZ2L"
-HISTORY_FILE = "posted_notices.json"
-ATTEMPTS_FILE = "notice_attempts.json"
+HISTORY_FILE = "posted_notices_india.json" if RUN_ON_INDIA else "posted_notices.json"
+ATTEMPTS_FILE = "notice_attempts_india.json" if RUN_ON_INDIA else "notice_attempts.json"
 MAX_POSTS_PER_RUN = 2
 MAX_FAILURES_PER_RUN = 2
 MAX_ATTEMPTS = 3              # a notice that fails in 3 separate runs is skipped for good
@@ -66,19 +71,21 @@ TARGET_PORTALS = [
     # 4. RRBMU (मत्स्य यूनिवर्सिटी, अलवर)
     {"uni": "RRBMU Alwar", "label": "RRBMU", "type": "Latest Update", "url": "https://www.rrbmuniv.ac.in/LatestUpdateMore.php?link=0"},
 
-    # 5. RPSC (राजस्थान लोक सेवा आयोग)
-    {"uni": "RPSC", "label": "RPSC", "type": "News & Press Note", "url": "https://rpsc.rajasthan.gov.in/"},
+    # 5. RPSC (राजस्थान लोक सेवा आयोग). The home page also links fixed PDFs (RTI, FAQ), so only press notes and news count.
+    {"uni": "RPSC", "label": "RPSC", "type": "News & Press Note", "url": "https://rpsc.rajasthan.gov.in/",
+     "only": r"/Static/(PressNotes|News)/", "india_only": True},
 
-    # 6. RSSB / RSMSSB (राजस्थान कर्मचारी चयन बोर्ड)
-    {"uni": "RSMSSB", "label": "RSMSSB", "type": "News & Notice", "url": "https://rssb.rajasthan.gov.in/news"},
-    {"uni": "RSMSSB", "label": "RSMSSB, Recruitment", "type": "Advertisement", "url": "https://rssb.rajasthan.gov.in/advertisements"},
+    # 6. RSSB / RSMSSB (राजस्थान कर्मचारी चयन बोर्ड). /news carries the notices, press notes and recruitment updates;
+    # the advertisement list is loaded by JavaScript, so it has nothing to read.
+    {"uni": "RSMSSB", "label": "RSMSSB", "type": "News & Notice", "url": "https://rssb.rajasthan.gov.in/news", "india_only": True},
 
     # 7. UPSC (संघ लोक सेवा आयोग)
     {"uni": "UPSC", "label": "UPSC", "type": "Recruitment Advertisement", "url": "https://www.upsc.gov.in/recruitment/recruitment-advertisement"},
 
-    # 8. SSC (कर्मचारी चयन आयोग)
-    {"uni": "SSC", "label": "SSC", "type": "Notice Board", "url": "https://ssc.gov.in/home/notice-board"},
+    # 8. SSC (कर्मचारी चयन आयोग). The notice board page is built by JavaScript, so the bot reads the API behind it.
+    {"uni": "SSC", "label": "SSC", "type": "Notice Board", "url": "https://ssc.gov.in/home/notice-board", "reader": "ssc_api"},
 ]
+ACTIVE_PORTALS = [p for p in TARGET_PORTALS if bool(p.get("india_only")) == RUN_ON_INDIA]
 
 # ================= WHICH LINKS COUNT AS NOTICES =================
 # Old versions took every link with a long title, so menus and footers were posted as "notices".
@@ -127,37 +134,121 @@ def academic_session(today=None):
     return f"{start}-{start + 1}"
 
 
-def fetch_notices_from_portal(portal):
-    """Returns the portal's notice links, or None if the portal couldn't be read."""
+DATE_IN_TEXT = re.compile(r"\b(\d{1,2})[-/.](\d{1,2})[-/.](20\d{2})\b")
+ROW_NOISE = re.compile(r"\s*\b(size|date uploaded|uploaded on)\s*:.*$", re.IGNORECASE | re.DOTALL)
+
+
+def find_date(text):
+    """The first past dd-mm-yyyy (or dd/mm/yyyy) date in the text, or None. Future dates are deadlines, not publish dates."""
+    for d, m, y in DATE_IN_TEXT.findall(text or ""):
+        try:
+            found = date(int(y), int(m), int(d))
+        except ValueError:
+            continue
+        if found <= date.today():
+            return found
+    return None
+
+
+def title_from_row(a):
+    """For links that only say "View" or "Click Here": the notice title is the longest other cell in the table row."""
+    row = a.find_parent("tr")
+    if not row:
+        return "", ""
+    cells = [c for c in row.find_all(["td", "th"]) if a not in c.find_all("a")]
+    texts = [ROW_NOISE.sub("", c.get_text(" ", strip=True)).strip(" |-") for c in cells]
+    texts = [t for t in texts if t and not DATE_IN_TEXT.fullmatch(t)]
+    return (max(texts, key=len) if texts else ""), row.get_text(" ", strip=True)
+
+
+def fetch_page(portal):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
+    url = portal.get("api_url", portal["url"])
     try:
-        res = requests.get(portal["url"], headers=headers, timeout=20, verify=False)
+        res = requests.get(url, headers=headers, timeout=20, verify=False)
         if res.status_code != 200:
-            print(f"⚠️ {portal['uni']} ({portal['url']}): HTTP {res.status_code}")
+            print(f"⚠️ {portal['uni']} ({url}): HTTP {res.status_code}")
             return None
+        return res
     except Exception as e:
-        print(f"⚠️ Error reading {portal['uni']} ({portal['url']}): {e}")
+        print(f"⚠️ Error reading {portal['uni']} ({url}): {e}")
+        return None
+
+
+def make_notice(portal, title, url, notice_date):
+    return {
+        "title": title,
+        "url": url,
+        "uni": portal["uni"],
+        "label": portal["label"],
+        "type": portal["type"],
+        "date": notice_date.isoformat() if notice_date else None,
+    }
+
+
+def fetch_ssc_notices(portal):
+    """SSC's notice board is filled in by JavaScript from this API, newest first."""
+    portal = dict(portal, api_url=(
+        "https://ssc.gov.in/api/general-website/portal/notice-boards?page=1&limit=30&contentType=notice-boards"
+        "&key=createdAt&order=DESC&isAttachment=true&language=english"
+        "&attributes=id,headline,examId,contentType,redirectUrl,startDate,endDate,language,createdAt"
+    ))
+    res = fetch_page(portal)
+    if res is None:
+        return None
+    try:
+        items = res.json().get("data") or []
+    except ValueError:
+        print(f"⚠️ {portal['uni']}: the notice API did not return JSON")
+        return None
+    notices = []
+    for item in items:
+        title = " ".join((item.get("headline") or "").split())
+        files = item.get("attachments") or []
+        if files and files[0].get("path"):
+            url = "https://ssc.gov.in/api/attachment/" + quote(files[0]["path"].replace("\\", "/"))
+        elif item.get("redirectUrl"):
+            url = urljoin("https://ssc.gov.in/", item["redirectUrl"])
+        else:
+            continue
+        created = item.get("createdAt") or ""
+        notices.append(make_notice(portal, title, url, date.fromisoformat(created[:10]) if created else None))
+    return notices
+
+
+def fetch_notices_from_portal(portal):
+    """Returns the portal's notice links, or None if the portal couldn't be read."""
+    if portal.get("reader") == "ssc_api":
+        return fetch_ssc_notices(portal)
+    res = fetch_page(portal)
+    if res is None:
         return None
 
     soup = BeautifulSoup(res.text, "html.parser")
+    only = re.compile(portal["only"]) if portal.get("only") else None
     notices = []
     for a in soup.find_all("a", href=True):
         title = a.get_text(" ", strip=True)
         href = a["href"].strip()
-        if not href or href.startswith("#") or len(title) < 12:
+        if not href or href.startswith("#"):
             continue
         full_url = urljoin(portal["url"], href)
+        if only and not only.search(full_url):
+            continue
+        row = a.find_parent(["tr", "li"])  # the publish date is often next to the link (RSMSSB: "03-10-2026 - Title")
+        row_text = row.get_text(" ", strip=True) if row else ""
+        if len(title) < 12:
+            title, row_text = title_from_row(a)
+            if len(title) < 12:
+                continue
+            if not full_url.lower().split("?")[0].endswith(DOCUMENT_EXTENSIONS):
+                # Several results share one page (e.g. NEP_RESULT.aspx), so the title tells them apart.
+                full_url = f"{full_url}#{quote(title[:80])}"
         if not looks_like_notice(title, full_url):
             continue
-        notices.append({
-            "title": title,
-            "url": full_url,
-            "uni": portal["uni"],
-            "label": portal["label"],
-            "type": portal["type"],
-        })
+        notices.append(make_notice(portal, title, full_url, find_date(title) or find_date(row_text)))
     return notices
 
 
@@ -317,7 +408,7 @@ def main():
 
     print("🔍 सभी यूनिवर्सिटी व भर्ती आयोगों को स्कैन किया जा रहा है...")
     notices, urls, failed_portals = [], set(), 0
-    for portal in TARGET_PORTALS:
+    for portal in ACTIVE_PORTALS:
         found = fetch_notices_from_portal(portal)
         if found is None:
             failed_portals += 1
@@ -332,15 +423,21 @@ def main():
 
     if DRY_RUN:
         for n in new_notices[:50]:
-            print(f"  [{n['uni']} / {n['type']}] {n['title'][:90]}\n      {n['url']}")
+            print(f"  [{n['uni']} / {n['type']} / {n['date'] or 'no date'}] {n['title'][:90]}\n      {n['url']}")
         print("DRY_RUN: nothing was posted and no files were changed.")
         return
 
     if BASELINE:
-        history.extend(n["url"] for n in new_notices)
+        if failed_portals:
+            # A portal that was down would post its whole back catalogue on the next normal run.
+            print("BASELINE: stopped, because some portals could not be read. Run it again.")
+            return
+        keep_from = (date.today() - timedelta(days=BASELINE_KEEP_DAYS)).isoformat() if BASELINE_KEEP_DAYS else None
+        marked = [n for n in new_notices if not (keep_from and n["date"] and n["date"] >= keep_from)]
+        history.extend(n["url"] for n in marked)
         save_json(HISTORY_FILE, history)
         save_json(ATTEMPTS_FILE, attempts)
-        print(f"BASELINE: marked {len(new_notices)} current links as seen. Nothing was posted.")
+        print(f"BASELINE: marked {len(marked)} current links as seen, left {len(new_notices) - len(marked)} recent ones to post. Nothing was posted.")
         return
 
     posted, failed, errors = 0, [], []
@@ -376,7 +473,7 @@ def main():
                 errors.append(f"  ↳ skipped for good after {MAX_ATTEMPTS} failed runs: {html.escape(notice['title'][:70])}")
             else:
                 attempts[notice["url"]] = count
-    if failed_portals == len(TARGET_PORTALS):
+    if failed_portals == len(ACTIVE_PORTALS):
         errors.append("• Could not read any portal (network problem or every site is down).")
 
     if errors and time.time() - attempts.get("__last_admin_alert__", 0) > ADMIN_ALERT_EVERY_SECONDS:
