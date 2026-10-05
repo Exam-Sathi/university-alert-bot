@@ -347,7 +347,7 @@ def send_telegram_alert(notice):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        res = requests.post(url, json=payload, timeout=12)
+        res = requests.post(url, json=payload, timeout=30)
         if res.json().get("ok"):
             print("✅ Telegram पर अलर्ट भेजा गया (UniExam Dose Website Link)!")
         else:
@@ -395,7 +395,7 @@ def notify_admin(text):
         requests.post(
             f"https://api.telegram.org/bot{ADMIN_TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": ADMIN_TELEGRAM_CHAT_ID, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": True},
-            timeout=12,
+            timeout=30,
         )
     except Exception as e:
         print(f"Admin alert error: {e}")
