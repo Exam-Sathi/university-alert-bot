@@ -280,9 +280,10 @@ def generate_ai_post(notice):
        <div style="text-align:center;margin:30px 0;">
          <a href="{notice['url']}" target="_blank" rel="noopener nofollow" style="background:#1d4ed8;color:#ffffff;padding:16px 34px;border-radius:30px;text-decoration:none;font-weight:800;font-size:1.15rem;display:inline-block;box-shadow:0 5px 20px rgba(29,78,216,0.35);transition:0.3s;">📥 आधिकारिक नोटिस / रिजल्ट पीडीएफ डाउनलोड करें &#8594;</a>
        </div>
-    6. FREQUENTLY ASKED QUESTIONS (H2): छात्रों द्वारा पूछे जाने वाले 3 सामान्य सवाल और उनके सटीक उत्तर (FAQ Schema Ready)।
-    7. SEO TAGS & KEYWORDS (H3): 10-15 ट्रेंडिंग सर्च कीवर्ड्स कॉमा लगाकर लिखें।
-    8. SOCIAL INVITE:
+    6. FREQUENTLY ASKED QUESTIONS (H2): छात्रों द्वारा पूछे जाने वाले 3 सामान्य सवाल और उनके सटीक उत्तर।
+       हर सवाल-जवाब बिल्कुल इसी ढाँचे में लिखें (यही ढाँचा Google के FAQ रिच रिज़ल्ट के लिए पढ़ा जाता है):
+       <div class="faq-item"><h3 class="faq-q">सवाल यहाँ</h3><p class="faq-a">जवाब यहाँ</p></div>
+    7. SOCIAL INVITE:
        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px;text-align:center;margin-top:25px;">
          <p style="margin:0 0 8px;font-weight:700;color:#166534;">🔔 सबसे तेज़ अपडेट पाने के लिए हमारे चैनल जॉइन करें:</p>
          <a href="{WHATSAPP_CHANNEL_URL}" target="_blank" style="background:#16a34a;color:#fff;padding:8px 18px;border-radius:20px;text-decoration:none;font-weight:700;display:inline-block;margin:4px;">📲 Join WhatsApp Channel</a>
@@ -297,6 +298,35 @@ def generate_ai_post(notice):
     return re.sub(r"^```(?:html)?\s*|\s*```$", "", text)
 
 
+FAQ_PATTERN = re.compile(
+    r'<h3[^>]*class="faq-q"[^>]*>(.*?)</h3>\s*<p[^>]*class="faq-a"[^>]*>(.*?)</p>',
+    re.S,
+)
+
+
+def faq_schema(html_content):
+    """FAQPage markup for the questions already written into the post.
+
+    Google can show these questions directly under the search result. It is built here from
+    the post's own text rather than asked of the model, so it can never disagree with what the
+    page says, and a post whose FAQ came out in another shape simply gets no markup.
+    """
+    items = []
+    for question, answer in FAQ_PATTERN.findall(html_content):
+        q = re.sub(r"<[^>]+>", "", question).strip()
+        a = re.sub(r"<[^>]+>", "", answer).strip()
+        if q and a:
+            items.append({
+                "@type": "Question",
+                "name": q,
+                "acceptedAnswer": {"@type": "Answer", "text": a},
+            })
+    if not items:
+        return ""
+    data = {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": items}
+    return '\n<script type="application/ld+json">' + json.dumps(data, ensure_ascii=False) + "</script>"
+
+
 def publish_to_blogger(notice, html_content):
     """Blogger पर पोस्ट पब्लिश करना (SEO Labels के साथ). Raises if it fails."""
     if not (BLOGGER_EMAIL and SENDER_GMAIL and GMAIL_APP_PASS):
@@ -308,9 +338,10 @@ def publish_to_blogger(notice, html_content):
     msg["From"] = SENDER_GMAIL
     msg["To"] = BLOGGER_EMAIL
 
-    # SEO Tags & Labels
-    labels = f"Notice, {notice['label']}, UniExam Dose, Official Update"
-    full_html = html_content + f"<br/><br/><p style='color:#64748b;font-size:0.8rem;'>Labels: {labels}</p>"
+    # A line reading "Labels: …" used to be appended here. Blogger's post-by-email cannot set
+    # labels, so it was only grey text pretending to be them — no label pages, no links, nothing
+    # to click. What does help is telling Google what the FAQ at the foot of the post says.
+    full_html = html_content + faq_schema(html_content)
     msg.attach(MIMEText(full_html, "html"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
