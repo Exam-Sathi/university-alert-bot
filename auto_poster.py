@@ -40,6 +40,10 @@ DRY_RUN = os.environ.get("DRY_RUN") == "1"
 BASELINE = os.environ.get("BASELINE") == "1"
 # With BASELINE=1, BASELINE_KEEP_DAYS=7 leaves notices dated in the last 7 days unseen, so they still get posted.
 BASELINE_KEEP_DAYS = int(os.environ.get("BASELINE_KEEP_DAYS") or 0)
+# A notice older than this is recorded as seen but never posted. The portals keep their whole back
+# catalogue on the page — RPSC still lists press notes from 2019 — and a link we have not happened
+# to record yet is not news just because it is new to us. 0 turns the check off.
+MAX_NOTICE_AGE_DAYS = int(os.environ.get("MAX_NOTICE_AGE_DAYS") or 15)
 # Some portals block servers outside India (GitHub's included). Those are marked "india_only" below and are
 # read by a separate run on a computer in India (RUN_ON=india), which keeps its own history files.
 RUN_ON_INDIA = os.environ.get("RUN_ON") == "india"
@@ -450,11 +454,28 @@ def main():
                 notices.append(notice)
 
     new_notices = [n for n in notices if n["url"] not in seen]
-    print(f"कुल नोटिस लिंक्स: {len(notices)} | नए नोटिस: {len(new_notices)} | पढ़ नहीं पाए पोर्टल: {failed_portals}")
+
+    # Old notices are not news. A portal lists everything it has ever published, so a link can be
+    # new to us and years old on the page; those are recorded as seen so they never come round
+    # again, and only genuinely recent ones go on to be written up. A notice with no readable date
+    # still posts — we cannot tell, and there are only ever a few.
+    cutoff = (date.today() - timedelta(days=MAX_NOTICE_AGE_DAYS)).isoformat() if MAX_NOTICE_AGE_DAYS else None
+    stale = [n for n in new_notices if cutoff and n["date"] and n["date"] < cutoff]
+    if stale:
+        new_notices = [n for n in new_notices if n not in stale]
+        if not (DRY_RUN or BASELINE):
+            history.extend(n["url"] for n in stale)
+            seen.update(n["url"] for n in stale)
+            save_json(HISTORY_FILE, history)
+
+    print(f"कुल नोटिस लिंक्स: {len(notices)} | नए नोटिस: {len(new_notices)} | "
+          f"पुराने (छोड़े गए): {len(stale)} | पढ़ नहीं पाए पोर्टल: {failed_portals}")
 
     if DRY_RUN:
         for n in new_notices[:50]:
             print(f"  [{n['uni']} / {n['type']} / {n['date'] or 'no date'}] {n['title'][:90]}\n      {n['url']}")
+        for n in stale[:10]:
+            print(f"  (skipped, {n['date']}) [{n['uni']}] {n['title'][:80]}")
         print("DRY_RUN: nothing was posted and no files were changed.")
         return
 
