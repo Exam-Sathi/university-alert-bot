@@ -81,6 +81,11 @@ TARGET_PORTALS = [
     # 5. RPSC (राजस्थान लोक सेवा आयोग). The home page also links fixed PDFs (RTI, FAQ), so only press notes and news count.
     {"uni": "RPSC", "label": "RPSC", "type": "News & Press Note", "url": "https://rpsc.rajasthan.gov.in/",
      "only": r"/Static/(PressNotes|News)/", "india_only": True},
+    # The news page carries what the home page only highlights: results, answer keys and
+    # recruitment advertisements as well as press notes. Old question papers are left out —
+    # they are a library, not news, and would post the whole archive as if it were new.
+    {"uni": "RPSC", "label": "RPSC, Result", "type": "News, Result & Answer Key", "url": "https://rpsc.rajasthan.gov.in/news",
+     "only": r"/Static/(PressNotes|News|Result|AnswerKeys|RecruitmentAdvertisements)/", "india_only": True},
 
     # 6. RSSB / RSMSSB (राजस्थान कर्मचारी चयन बोर्ड). /news carries the notices, press notes and recruitment updates;
     # the advertisement list is loaded by JavaScript, so it has nothing to read.
@@ -155,6 +160,15 @@ def find_date(text):
         if found <= date.today():
             return found
     return None
+
+
+LEADING_DATE = re.compile(r"^\s*\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\s*[-–—|:,]*\s*")
+
+
+def strip_leading_date(title):
+    """RPSC and RSMSSB print the publish date in front of the link text; the post has its own."""
+    cleaned = LEADING_DATE.sub("", title).strip()
+    return cleaned if len(cleaned) >= 12 else title
 
 
 def title_from_row(a):
@@ -255,7 +269,8 @@ def fetch_notices_from_portal(portal):
                 full_url = f"{full_url}#{quote(title[:80])}"
         if not looks_like_notice(title, full_url):
             continue
-        notices.append(make_notice(portal, title, full_url, find_date(title) or find_date(row_text)))
+        notice_date = find_date(title) or find_date(row_text)
+        notices.append(make_notice(portal, strip_leading_date(title), full_url, notice_date))
     return notices
 
 
