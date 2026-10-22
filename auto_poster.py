@@ -49,6 +49,9 @@ MAX_NOTICE_AGE_DAYS = int(os.environ.get("MAX_NOTICE_AGE_DAYS") or 15)
 RUN_ON_INDIA = os.environ.get("RUN_ON") == "india"
 
 WEBSITE_DOMAIN = "https://www.uniexamdose.com"
+# Blogger's own feed of published posts. Public, no key, and the only way an
+# emailed-in post tells us its address.
+FEED_URL = f"{WEBSITE_DOMAIN}/feeds/posts/default?alt=json&max-results=25"
 WHATSAPP_CHANNEL_URL = "https://whatsapp.com/channel/0029Vb8wG4W4o7qDPLg0JZ2L"
 HISTORY_FILE = "posted_notices_india.json" if RUN_ON_INDIA else "posted_notices.json"
 ATTEMPTS_FILE = "notice_attempts_india.json" if RUN_ON_INDIA else "notice_attempts.json"
@@ -336,7 +339,7 @@ def publish_to_blogger(notice, html_content):
     if not (BLOGGER_EMAIL and SENDER_GMAIL and GMAIL_APP_PASS):
         raise RuntimeError("Blogger email secrets (BLOGGER_EMAIL, SENDER_GMAIL, GMAIL_APP_PASS) are missing")
 
-    title = f"[{notice['uni']}] {notice['title']} - Latest Update & Download"
+    title = post_title(notice)
     msg = MIMEMultipart("alternative")
     msg["Subject"] = title
     msg["From"] = SENDER_GMAIL
@@ -354,14 +357,56 @@ def publish_to_blogger(notice, html_content):
     print(f"✅ Blogger पर सफलतापूर्वक पोस्ट हुआ: {title}")
 
 
+def post_title(notice):
+    """Blogger पर पोस्ट का टाइटल — ईमेल और फीड लुकअप, दोनों यहीं से लेते हैं।"""
+    return f"[{notice['uni']}] {notice['title']} - Latest Update & Download"
+
+
+def _match_key(text):
+    return re.sub(r"\s+", " ", text or "").strip().lower()
+
+
+def find_published_post_url(title, tries=8, gap=15):
+    """The address of the post we just emailed in, once Blogger has published it.
+
+    Post-by-email tells us nothing about where the post landed, so the alert used to link to a
+    search for the first 35 characters of the title. That cut words in half — "...Date change of
+    Int" — and Blogger matches whole words, so students tapped the alert and read "Nothing found".
+    The public feed needs no key and carries the real address, which Blogger builds with a random
+    suffix (…ru-notice_01251156367.html) that we could never have guessed.
+    """
+    wanted = _match_key(title)
+    for attempt in range(tries):
+        if attempt:
+            time.sleep(gap)
+        try:
+            feed = requests.get(FEED_URL, timeout=30).json()
+        except Exception as e:
+            print(f"⚠️ Blogger फीड नहीं पढ़ी जा सकी: {e}")
+            continue
+        for entry in feed.get("feed", {}).get("entry", []):
+            if _match_key(entry.get("title", {}).get("$t")) != wanted:
+                continue
+            for link in entry.get("link", []):
+                if link.get("rel") == "alternate" and link.get("href"):
+                    print(f"🔗 पोस्ट का पता मिला: {link['href']}")
+                    return link["href"]
+    print("⚠️ पोस्ट अभी फीड में नहीं आई — अलर्ट में सर्च लिंक भेजा जा रहा है।")
+    return None
+
+
 def get_website_search_link(notice):
-    """वेबसाइट पर छात्र को भेजने के लिए डायरेक्ट लिंक"""
-    search_term = notice['title'][:35].strip()
-    encoded = urllib.parse.quote_plus(search_term)
+    """Fallback for an alert sent before Blogger has published the post.
+
+    Whole words only: Blogger has no prefix matching, so half a word matches nothing at all.
+    """
+    words = re.findall(r"[\wऀ-ॿ]+", notice.get("title", ""), re.UNICODE)
+    query = " ".join(words[:6]).strip() or notice.get("uni", "Notice")
+    encoded = urllib.parse.quote_plus(query)
     return f"{WEBSITE_DOMAIN}/search?q={encoded}"
 
 
-def send_telegram_alert(notice):
+def send_telegram_alert(notice, link=None):
     """Telegram अलर्ट - छात्र सीधे UniExam Dose वेबसाइट पर आएगा"""
     if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
         print("⚠️ Telegram Secrets missing.")
@@ -369,7 +414,7 @@ def send_telegram_alert(notice):
 
     safe_uni = html.escape(notice.get('uni', 'UniExam Dose'))
     safe_title = html.escape(notice.get('title', 'Update'))
-    website_url = get_website_search_link(notice)
+    website_url = link or get_website_search_link(notice)
 
     message = (
         f"🚨 <b>{safe_uni} ताज़ा अपडेट जारी!</b>\n\n"
@@ -391,12 +436,12 @@ def send_telegram_alert(notice):
         print(f"Telegram error: {e}")
 
 
-def send_whatsapp_alert(notice):
+def send_whatsapp_alert(notice, link=None):
     """WhatsApp Channel अलर्ट - छात्र सीधे UniExam Dose वेबसाइट पर आएगा"""
     if not (WHATSAPP_INSTANCE_ID and WHATSAPP_API_TOKEN):
         return
 
-    website_url = get_website_search_link(notice)
+    website_url = link or get_website_search_link(notice)
 
     message = (
         f"🚨 *{notice['uni']} ताज़ा अपडेट जारी!*\n\n"
@@ -511,8 +556,11 @@ def main():
         seen.add(notice["url"])
         attempts.pop(notice["url"], None)
         save_json(HISTORY_FILE, history)  # saved after every post, so a later crash can't cause duplicates
-        send_telegram_alert(notice)
-        send_whatsapp_alert(notice)
+        # Blogger publishes an emailed post a minute or so later; wait for it so the alert can
+        # point at the post itself instead of a search for its title.
+        post_url = find_published_post_url(post_title(notice))
+        send_telegram_alert(notice, post_url)
+        send_whatsapp_alert(notice, post_url)
 
     # Only count failures against a notice when something else worked this run; if everything
     # failed (bad key, Gmail down), the problem isn't the notice, so it stays in the queue.
