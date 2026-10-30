@@ -55,7 +55,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add posted_notices.json notice_attempts.json
+          git add posted_notices.json notice_attempts.json pending_alerts.json posted_titles.json
           if git diff --cached --quiet; then
             echo "No history changes."
             exit 0

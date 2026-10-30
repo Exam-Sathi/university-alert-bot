@@ -55,6 +55,11 @@ FEED_URL = f"{WEBSITE_DOMAIN}/feeds/posts/default?alt=json&max-results=25"
 WHATSAPP_CHANNEL_URL = "https://whatsapp.com/channel/0029Vb8wG4W4o7qDPLg0JZ2L"
 HISTORY_FILE = "posted_notices_india.json" if RUN_ON_INDIA else "posted_notices.json"
 ATTEMPTS_FILE = "notice_attempts_india.json" if RUN_ON_INDIA else "notice_attempts.json"
+# Alerts waiting for Blogger to publish their post, so they can carry its address.
+PENDING_FILE = "pending_alerts_india.json" if RUN_ON_INDIA else "pending_alerts.json"
+PENDING_ALERT_HOURS = 24
+# Titles already written up, so a notice re-uploaded under a new URL is not posted twice.
+TITLES_FILE = "posted_titles_india.json" if RUN_ON_INDIA else "posted_titles.json"
 MAX_POSTS_PER_RUN = 2
 MAX_FAILURES_PER_RUN = 2
 MAX_ATTEMPTS = 3              # a notice that fails in 3 separate runs is skipped for good
@@ -372,6 +377,37 @@ def publish_to_blogger(notice, html_content):
     print(f"✅ Blogger पर सफलतापूर्वक पोस्ट हुआ: {title}")
 
 
+def load_posted_titles():
+    """The titles we have already written up, so a re-uploaded notice is not posted twice.
+
+    The history is keyed on the notice's URL, and RPSC re-uploads a PDF under a fresh GUID when
+    it corrects anything — the same notice then looks new. The first run seeds this from the blog
+    itself, so notices posted before this existed are covered too.
+    """
+    titles = load_json(TITLES_FILE, None)
+    if titles is not None:
+        return set(titles)
+    seeded = set()
+    try:
+        # Deeper than the lookup feed: this is every notice already on the blog.
+        seed_url = FEED_URL.replace("max-results=25", "max-results=250")
+        feed = requests.get(f"{seed_url}&_={int(time.time())}", timeout=60).json()
+        for entry in feed.get("feed", {}).get("entry", []):
+            seeded.add(_match_key(strip_post_title(entry.get("title", {}).get("$t", ""))))
+    except Exception as e:
+        print(f"⚠️ पुराने पोस्ट्स की सूची नहीं मिली: {e}")
+    seeded.discard("")
+    if not (DRY_RUN or BASELINE):
+        save_json(TITLES_FILE, sorted(seeded))
+    print(f"📚 ब्लॉग से {len(seeded)} पुराने शीर्षक पढ़े गए (दोबारा पोस्ट रोकने के लिए)।")
+    return seeded
+
+
+def strip_post_title(title):
+    """The notice title inside a post title: "[RPSC] X - Latest Update & Download" -> "X"."""
+    without_uni = re.sub(r"^\s*\[[^\]]+\]\s*", "", title or "")
+    return re.sub(r"\s*-\s*Latest Update & Download\s*$", "", without_uni).strip()
+
 def post_title(notice):
     """Blogger पर पोस्ट का टाइटल — ईमेल और फीड लुकअप, दोनों यहीं से लेते हैं।"""
     return f"[{notice['uni']}] {notice['title']} - Latest Update & Download"
@@ -381,8 +417,11 @@ def _match_key(text):
     return re.sub(r"\s+", " ", text or "").strip().lower()
 
 
-def find_published_post_url(title, tries=8, gap=15):
+def find_published_post_url(title, tries=3, gap=20):
     """The address of the post we just emailed in, once Blogger has published it.
+
+    Blogger can take hours to publish a post that arrived by email, so this usually comes back
+    empty and the alert waits in the pending queue for a later run.
 
     Post-by-email tells us nothing about where the post landed, so the alert used to link to a
     search for the first 35 characters of the title. That cut words in half — "...Date change of
@@ -395,7 +434,8 @@ def find_published_post_url(title, tries=8, gap=15):
         if attempt:
             time.sleep(gap)
         try:
-            feed = requests.get(FEED_URL, timeout=30).json()
+            # A fresh query string each time, so no cache can hand us yesterday's feed.
+            feed = requests.get(f"{FEED_URL}&_={int(time.time())}", timeout=30).json()
         except Exception as e:
             print(f"⚠️ Blogger फीड नहीं पढ़ी जा सकी: {e}")
             continue
@@ -406,7 +446,7 @@ def find_published_post_url(title, tries=8, gap=15):
                 if link.get("rel") == "alternate" and link.get("href"):
                     print(f"🔗 पोस्ट का पता मिला: {link['href']}")
                     return link["href"]
-    print("⚠️ पोस्ट अभी फीड में नहीं आई — अलर्ट में सर्च लिंक भेजा जा रहा है।")
+    print("⚠️ पोस्ट अभी फीड में नहीं आई।")
     return None
 
 
@@ -421,6 +461,43 @@ def get_website_search_link(notice):
     return f"{WEBSITE_DOMAIN}/search?q={encoded}"
 
 
+def queue_pending_alert(notice):
+    """Keeps an alert back until we know the post's address.
+
+    Blogger can take several minutes to publish a post that arrived by email, and until it does
+    there is no address to send. A search for the title is not good enough as a substitute: RPSC
+    alone issues a dozen notices called "Press Note Regarding Online Detailed Application Form
+    for ...", so the student opens a list and the notice they were sent is second or tenth. So
+    the alert waits here and the next run sends it, late but pointing at the right notice.
+    """
+    pending = load_json(PENDING_FILE, [])
+    pending.append({"notice": notice, "title": post_title(notice), "queued_at": time.time()})
+    save_json(PENDING_FILE, pending)
+    print("📭 अलर्ट रोका गया — अगली बार पोस्ट का पता मिलते ही भेजा जाएगा।")
+
+
+def send_pending_alerts():
+    """Sends the alerts held back by earlier runs, now that Blogger has published their posts."""
+    pending = load_json(PENDING_FILE, [])
+    if not pending:
+        return
+    still_waiting, sent = [], 0
+    for item in pending:
+        age_hours = (time.time() - item.get("queued_at", 0)) / 3600
+        url = find_published_post_url(item["title"], tries=2, gap=5)
+        if url:
+            send_telegram_alert(item["notice"], url)
+            send_whatsapp_alert(item["notice"], url)
+            sent += 1
+        elif age_hours < PENDING_ALERT_HOURS:
+            still_waiting.append(item)
+        else:
+            # A day without the post appearing is not a timing problem any more.
+            notify_admin(f"⚠️ अलर्ट नहीं भेजा जा सका — पोस्ट फीड में नहीं मिली:\n{html.escape(item['title'][:200])}")
+    save_json(PENDING_FILE, still_waiting)
+    if sent:
+        print(f"📬 रुके हुए {sent} अलर्ट भेजे गए।")
+
 def send_telegram_alert(notice, link=None):
     """Telegram अलर्ट - छात्र सीधे UniExam Dose वेबसाइट पर आएगा"""
     if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
@@ -429,7 +506,7 @@ def send_telegram_alert(notice, link=None):
 
     safe_uni = html.escape(notice.get('uni', 'UniExam Dose'))
     safe_title = html.escape(notice.get('title', 'Update'))
-    website_url = link or get_website_search_link(notice)
+    website_url = link or get_website_search_link(notice)  # the fallback is a safety net; main() queues instead
 
     message = (
         f"🚨 <b>{safe_uni} ताज़ा अपडेट जारी!</b>\n\n"
@@ -456,7 +533,7 @@ def send_whatsapp_alert(notice, link=None):
     if not (WHATSAPP_INSTANCE_ID and WHATSAPP_API_TOKEN):
         return
 
-    website_url = link or get_website_search_link(notice)
+    website_url = link or get_website_search_link(notice)  # the fallback is a safety net; main() queues instead
 
     message = (
         f"🚨 *{notice['uni']} ताज़ा अपडेट जारी!*\n\n"
@@ -501,6 +578,9 @@ def main():
     attempts = load_json(ATTEMPTS_FILE, {})
     seen = set(history)
 
+    if not (DRY_RUN or BASELINE):
+        send_pending_alerts()
+
     print("🔍 सभी यूनिवर्सिटी व भर्ती आयोगों को स्कैन किया जा रहा है...")
     notices, urls, failed_portals = [], set(), 0
     for portal in ACTIVE_PORTALS:
@@ -514,6 +594,17 @@ def main():
                 notices.append(notice)
 
     new_notices = [n for n in notices if n["url"] not in seen]
+
+    # The same notice under a new URL is not new. RPSC re-uploads a corrected PDF with a fresh
+    # GUID, which is how the same press note went up twice last week.
+    posted_titles = load_posted_titles()
+    repeats = [n for n in new_notices if _match_key(n["title"]) in posted_titles]
+    if repeats:
+        new_notices = [n for n in new_notices if n not in repeats]
+        if not (DRY_RUN or BASELINE):
+            history.extend(n["url"] for n in repeats)
+            seen.update(n["url"] for n in repeats)
+            save_json(HISTORY_FILE, history)
 
     # Old notices are not news. A portal lists everything it has ever published, so a link can be
     # new to us and years old on the page; those are recorded as seen so they never come round
@@ -529,7 +620,8 @@ def main():
             save_json(HISTORY_FILE, history)
 
     print(f"कुल नोटिस लिंक्स: {len(notices)} | नए नोटिस: {len(new_notices)} | "
-          f"पुराने (छोड़े गए): {len(stale)} | पढ़ नहीं पाए पोर्टल: {failed_portals}")
+          f"पुराने (छोड़े गए): {len(stale)} | पहले से पोस्ट (छोड़े गए): {len(repeats)} | "
+          f"पढ़ नहीं पाए पोर्टल: {failed_portals}")
 
     if DRY_RUN:
         for n in new_notices[:50]:
@@ -567,6 +659,8 @@ def main():
             continue
 
         posted += 1
+        posted_titles.add(_match_key(notice["title"]))
+        save_json(TITLES_FILE, sorted(posted_titles))
         history.append(notice["url"])
         seen.add(notice["url"])
         attempts.pop(notice["url"], None)
@@ -574,8 +668,11 @@ def main():
         # Blogger publishes an emailed post a minute or so later; wait for it so the alert can
         # point at the post itself instead of a search for its title.
         post_url = find_published_post_url(post_title(notice))
-        send_telegram_alert(notice, post_url)
-        send_whatsapp_alert(notice, post_url)
+        if post_url:
+            send_telegram_alert(notice, post_url)
+            send_whatsapp_alert(notice, post_url)
+        else:
+            queue_pending_alert(notice)
 
     # Only count failures against a notice when something else worked this run; if everything
     # failed (bad key, Gmail down), the problem isn't the notice, so it stays in the queue.
