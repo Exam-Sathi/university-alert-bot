@@ -38,6 +38,12 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: gemini-3.6-flash
+          # Posting through the API: Blogger silently loses posts sent by email. The email
+          # settings below stay as the fallback for a run without these.
+          BLOGGER_BLOG_ID: 5577296032604520585
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
           BLOGGER_EMAIL: ${{ secrets.BLOGGER_EMAIL }}
           SENDER_GMAIL: ${{ secrets.SENDER_GMAIL }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
