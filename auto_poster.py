@@ -31,6 +31,13 @@ WHATSAPP_API_TOKEN = os.environ.get("WHATSAPP_API_TOKEN")
 
 # Failure reports go to a private admin Telegram chat (optional).
 ADMIN_TELEGRAM_BOT_TOKEN = os.environ.get("ADMIN_TELEGRAM_BOT_TOKEN")
+# Blogger API: posts arrive at once and hand back their address. Without these the bot
+# falls back to post-by-email, which is slower and loses posts.
+BLOGGER_BLOG_ID = os.environ.get("BLOGGER_BLOG_ID")
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_OAUTH_REFRESH_TOKEN")
+QUIET = os.environ.get("QUIET_POSTING") == "1"  # re-post without alerting the channel again
 ADMIN_TELEGRAM_CHAT_ID = (os.environ.get("ADMIN_TELEGRAM_CHAT_ID") or "").strip()
 
 # DRY_RUN=1 lists what would be posted without calling Gemini, email or Telegram, and changes no files.
@@ -47,6 +54,7 @@ MAX_NOTICE_AGE_DAYS = int(os.environ.get("MAX_NOTICE_AGE_DAYS") or 15)
 # Some portals block servers outside India (GitHub's included). Those are marked "india_only" below and are
 # read by a separate run on a computer in India (RUN_ON=india), which keeps its own history files.
 RUN_ON_INDIA = os.environ.get("RUN_ON") == "india"
+LIST_ONLY = os.environ.get("LIST_NOTICES") == "1"  # print every notice found, post nothing
 
 WEBSITE_DOMAIN = "https://www.uniexamdose.com"
 # Blogger's own feed of published posts. Public, no key, and the only way an
@@ -58,10 +66,13 @@ ATTEMPTS_FILE = "notice_attempts_india.json" if RUN_ON_INDIA else "notice_attemp
 # Alerts waiting for Blogger to publish their post, so they can carry its address.
 PENDING_FILE = "pending_alerts_india.json" if RUN_ON_INDIA else "pending_alerts.json"
 PENDING_ALERT_HOURS = 24
+# Notices being re-posted after Blogger lost them. They are old by now, and the age filter
+# would throw them away again, so it skips anything listed here until it has been posted.
+BACKFILL_FILE = "backfill_india.json" if RUN_ON_INDIA else "backfill.json"
 # Titles already written up, so a notice re-uploaded under a new URL is not posted twice.
 TITLES_FILE = "posted_titles_india.json" if RUN_ON_INDIA else "posted_titles.json"
-MAX_POSTS_PER_RUN = 2
-MAX_FAILURES_PER_RUN = 2
+MAX_POSTS_PER_RUN = int(os.environ.get("MAX_POSTS_PER_RUN") or 2)
+MAX_FAILURES_PER_RUN = int(os.environ.get("MAX_FAILURES_PER_RUN") or 2)
 MAX_ATTEMPTS = 3              # a notice that fails in 3 separate runs is skipped for good
 ADMIN_ALERT_EVERY_SECONDS = 3 * 60 * 60
 
@@ -354,6 +365,49 @@ def faq_schema(html_content):
     return '\n<script type="application/ld+json">' + json.dumps(data, ensure_ascii=False) + "</script>"
 
 
+def blogger_access_token():
+    """A fresh access token from the refresh token, or None if the API is not configured."""
+    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN and BLOGGER_BLOG_ID):
+        return None
+    res = requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": GOOGLE_REFRESH_TOKEN,
+            "grant_type": "refresh_token",
+        },
+        timeout=30,
+    )
+    token = res.json().get("access_token")
+    if not token:
+        raise RuntimeError(f"Google sign-in failed: {res.json().get('error_description') or res.json().get('error')}")
+    return token
+
+
+def publish_via_api(notice, html_content):
+    """Publishes the post through the Blogger API and returns its address.
+
+    Post-by-email loses posts. Of 98 the bot emailed in October, 36 never appeared on the blog —
+    no draft, no error, nothing — while the bot logged each one as sent and alerted students
+    about a page that did not exist. The API either returns the post or raises, and it hands back
+    the address straight away, so the alert can carry it instead of guessing at a search.
+    """
+    token = blogger_access_token()
+    if not token:
+        return None
+    res = requests.post(
+        f"https://www.googleapis.com/blogger/v3/blogs/{BLOGGER_BLOG_ID}/posts/",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"kind": "blogger#post", "title": post_title(notice), "content": html_content},
+        timeout=60,
+    )
+    body = res.json()
+    if res.status_code >= 300 or not body.get("url"):
+        raise RuntimeError(f"Blogger API {res.status_code}: {str(body.get('error', {}).get('message', body))[:200]}")
+    print(f"✅ Blogger पर पोस्ट हुआ (API): {body['url']}")
+    return body["url"]
+
 def publish_to_blogger(notice, html_content):
     """Blogger पर पोस्ट पब्लिश करना (SEO Labels के साथ). Raises if it fails."""
     if not (BLOGGER_EMAIL and SENDER_GMAIL and GMAIL_APP_PASS):
@@ -593,6 +647,11 @@ def main():
                 urls.add(notice["url"])
                 notices.append(notice)
 
+    if LIST_ONLY:
+        for n in notices:
+            print(f"NOTICE	{n['uni']}	{n['date'] or ''}	{n['title']}	{n['url']}")
+        return
+
     new_notices = [n for n in notices if n["url"] not in seen]
 
     # The same notice under a new URL is not new. RPSC re-uploads a corrected PDF with a fresh
@@ -611,7 +670,8 @@ def main():
     # again, and only genuinely recent ones go on to be written up. A notice with no readable date
     # still posts — we cannot tell, and there are only ever a few.
     cutoff = (date.today() - timedelta(days=MAX_NOTICE_AGE_DAYS)).isoformat() if MAX_NOTICE_AGE_DAYS else None
-    stale = [n for n in new_notices if cutoff and n["date"] and n["date"] < cutoff]
+    backfill = set(load_json(BACKFILL_FILE, []))
+    stale = [n for n in new_notices if cutoff and n["date"] and n["date"] < cutoff and n["url"] not in backfill]
     if stale:
         new_notices = [n for n in new_notices if n not in stale]
         if not (DRY_RUN or BASELINE):
@@ -651,7 +711,9 @@ def main():
         print(f"\n🚀 SEO पोस्ट तैयार हो रही है: [{notice['uni']}] {notice['title']}")
         try:
             post_html = generate_ai_post(notice)
-            publish_to_blogger(notice, post_html)
+            post_url = publish_via_api(notice, post_html)
+            if not post_url:
+                publish_to_blogger(notice, post_html)
         except Exception as e:
             print(f"❌ पोस्ट नहीं हुआ: {e}")
             failed.append(notice)
@@ -659,6 +721,9 @@ def main():
             continue
 
         posted += 1
+        if notice["url"] in backfill:
+            backfill.discard(notice["url"])
+            save_json(BACKFILL_FILE, sorted(backfill))
         posted_titles.add(_match_key(notice["title"]))
         save_json(TITLES_FILE, sorted(posted_titles))
         history.append(notice["url"])
@@ -667,8 +732,12 @@ def main():
         save_json(HISTORY_FILE, history)  # saved after every post, so a later crash can't cause duplicates
         # Blogger publishes an emailed post a minute or so later; wait for it so the alert can
         # point at the post itself instead of a search for its title.
-        post_url = find_published_post_url(post_title(notice))
-        if post_url:
+        # Only the email path has to go looking; the API already told us.
+        if not post_url:
+            post_url = find_published_post_url(post_title(notice))
+        if QUIET:
+            print("🔇 अलर्ट नहीं भेजा गया (QUIET_POSTING).")
+        elif post_url:
             send_telegram_alert(notice, post_url)
             send_whatsapp_alert(notice, post_url)
         else:
