@@ -51,9 +51,10 @@ BASELINE_KEEP_DAYS = int(os.environ.get("BASELINE_KEEP_DAYS") or 0)
 # catalogue on the page — RPSC still lists press notes from 2019 — and a link we have not happened
 # to record yet is not news just because it is new to us. 0 turns the check off.
 MAX_NOTICE_AGE_DAYS = int(os.environ.get("MAX_NOTICE_AGE_DAYS") or 15)
-# Some portals block servers outside India (GitHub's included). Those are marked "india_only" below and are
-# read by a separate run on a computer in India (RUN_ON=india), which keeps its own history files.
-RUN_ON_INDIA = os.environ.get("RUN_ON") == "india"
+# Every portal is read from one computer in India now. The split existed because GitHub's
+# servers are turned away by RPSC and RSMSSB, so half the portals ran there and half here; two
+# runs meant two sets of history, and the hosted half published by email, which lost about a
+# third of what it sent. One run, one history, one way of publishing.
 LIST_ONLY = os.environ.get("LIST_NOTICES") == "1"  # print every notice found, post nothing
 
 WEBSITE_DOMAIN = "https://www.uniexamdose.com"
@@ -61,16 +62,16 @@ WEBSITE_DOMAIN = "https://www.uniexamdose.com"
 # emailed-in post tells us its address.
 FEED_URL = f"{WEBSITE_DOMAIN}/feeds/posts/default?alt=json&max-results=25"
 WHATSAPP_CHANNEL_URL = "https://whatsapp.com/channel/0029Vb8wG4W4o7qDPLg0JZ2L"
-HISTORY_FILE = "posted_notices_india.json" if RUN_ON_INDIA else "posted_notices.json"
-ATTEMPTS_FILE = "notice_attempts_india.json" if RUN_ON_INDIA else "notice_attempts.json"
+HISTORY_FILE = "posted_notices_india.json"
+ATTEMPTS_FILE = "notice_attempts_india.json"
 # Alerts waiting for Blogger to publish their post, so they can carry its address.
-PENDING_FILE = "pending_alerts_india.json" if RUN_ON_INDIA else "pending_alerts.json"
+PENDING_FILE = "pending_alerts_india.json"
 PENDING_ALERT_HOURS = 24
 # Notices being re-posted after Blogger lost them. They are old by now, and the age filter
 # would throw them away again, so it skips anything listed here until it has been posted.
-BACKFILL_FILE = "backfill_india.json" if RUN_ON_INDIA else "backfill.json"
+BACKFILL_FILE = "backfill_india.json"
 # Titles already written up, so a notice re-uploaded under a new URL is not posted twice.
-TITLES_FILE = "posted_titles_india.json" if RUN_ON_INDIA else "posted_titles.json"
+TITLES_FILE = "posted_titles_india.json"
 MAX_POSTS_PER_RUN = int(os.environ.get("MAX_POSTS_PER_RUN") or 2)
 MAX_FAILURES_PER_RUN = int(os.environ.get("MAX_FAILURES_PER_RUN") or 2)
 MAX_ATTEMPTS = 3              # a notice that fails in 3 separate runs is skipped for good
@@ -96,16 +97,16 @@ TARGET_PORTALS = [
 
     # 5. RPSC (राजस्थान लोक सेवा आयोग). The home page also links fixed PDFs (RTI, FAQ), so only press notes and news count.
     {"uni": "RPSC", "label": "RPSC", "type": "News & Press Note", "url": "https://rpsc.rajasthan.gov.in/",
-     "only": r"/Static/(PressNotes|News)/", "india_only": True},
+     "only": r"/Static/(PressNotes|News)/"},
     # The news page carries what the home page only highlights: results, answer keys and
     # recruitment advertisements as well as press notes. Old question papers are left out —
     # they are a library, not news, and would post the whole archive as if it were new.
     {"uni": "RPSC", "label": "RPSC, Result", "type": "News, Result & Answer Key", "url": "https://rpsc.rajasthan.gov.in/news",
-     "only": r"/Static/(PressNotes|News|Result|AnswerKeys|RecruitmentAdvertisements)/", "india_only": True},
+     "only": r"/Static/(PressNotes|News|Result|AnswerKeys|RecruitmentAdvertisements)/"},
 
     # 6. RSSB / RSMSSB (राजस्थान कर्मचारी चयन बोर्ड). /news carries the notices, press notes and recruitment updates;
     # the advertisement list is loaded by JavaScript, so it has nothing to read.
-    {"uni": "RSMSSB", "label": "RSMSSB", "type": "News & Notice", "url": "https://rssb.rajasthan.gov.in/news", "india_only": True},
+    {"uni": "RSMSSB", "label": "RSMSSB", "type": "News & Notice", "url": "https://rssb.rajasthan.gov.in/news"},
 
     # 7. UPSC (संघ लोक सेवा आयोग)
     {"uni": "UPSC", "label": "UPSC", "type": "Recruitment Advertisement", "url": "https://www.upsc.gov.in/recruitment/recruitment-advertisement"},
@@ -113,7 +114,7 @@ TARGET_PORTALS = [
     # 8. SSC (कर्मचारी चयन आयोग). The notice board page is built by JavaScript, so the bot reads the API behind it.
     {"uni": "SSC", "label": "SSC", "type": "Notice Board", "url": "https://ssc.gov.in/home/notice-board", "reader": "ssc_api"},
 ]
-ACTIVE_PORTALS = [p for p in TARGET_PORTALS if bool(p.get("india_only")) == RUN_ON_INDIA]
+ACTIVE_PORTALS = TARGET_PORTALS
 
 # ================= WHICH LINKS COUNT AS NOTICES =================
 # Old versions took every link with a long title, so menus and footers were posted as "notices".
